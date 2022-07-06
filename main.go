@@ -3,15 +3,15 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
 	"os"
 	"os/signal"
 
 	sdktypes "github.com/cosmos/cosmos-sdk/types"
 	"github.com/ignite/cli/ignite/pkg/cosmosclient"
-	"github.com/soupy-finance/noodle-val-client/pricegetter"
+	"github.com/soupy-finance/noodle-val-client/pricesgetter"
 	"github.com/soupy-finance/noodle/x/oracle/types"
+	oracletypes "github.com/soupy-finance/noodle/x/oracle/types"
 )
 
 const AddressPrefix = "soupy"
@@ -38,19 +38,30 @@ func main() {
 		log.Fatal(err)
 	}
 
-	assets := getAssets()
+	assets := getAssets(cosmos)
 	prices := map[string]string{}
 
 	for _, asset := range assets {
 		prices[asset] = "0"
 	}
 
-	go sendPrices(cosmos, address, accountName, prices)
-	pricegetter.GetPrices()
+	wsClosed := make(chan bool)
+	go pricesgetter.GetPrices(assets, prices, wsClosed, interrupt)
+	sendPrices(cosmos, address, accountName, prices, wsClosed, interrupt)
 }
 
-func getAssets() []string {
-	return []string{}
+func getAssets(cosmos cosmosclient.Client) []string {
+	queryClient := oracletypes.NewQueryClient(cosmos.Context())
+
+	res, err := queryClient.Params(context.Background(), &oracletypes.QueryParamsRequest{})
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	assets := []string{}
+	json.Unmarshal([]byte(res.Params.Assets), &assets)
+	return assets
 }
 
 func sendPrices(
@@ -58,29 +69,30 @@ func sendPrices(
 	address sdktypes.AccAddress,
 	accountName string,
 	prices map[string]string,
+	wsClosed chan bool,
+	interrupt chan os.Signal,
 ) {
-	var i float64 = 1
-
 	for {
-		pricesJson, err := json.Marshal(prices)
+		select {
+		case <-interrupt:
+			<-wsClosed
+			return
+		default:
+			pricesJson, err := json.Marshal(prices)
 
-		if err != nil {
-			log.Fatal(err)
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			msg := &types.MsgUpdatePrices{
+				Creator: address.String(),
+				Data:    string(pricesJson),
+			}
+			_, err = cosmos.BroadcastTx(accountName, msg)
+
+			if err != nil {
+				log.Fatal(err)
+			}
 		}
-
-		msg := &types.MsgUpdatePrices{
-			Creator: address.String(),
-			Data:    string(pricesJson),
-		}
-		_, err = cosmos.BroadcastTx(accountName, msg)
-		fmt.Println("Price updated")
-
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		// Testing
-		prices["eth"] = fmt.Sprintf("%f", i)
-		i += 1
 	}
 }
