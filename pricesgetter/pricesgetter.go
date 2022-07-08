@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/gorilla/websocket"
 )
@@ -26,17 +27,24 @@ var binanceBroken chan bool
 // var ftxBroken chan bool
 // var coinbaseBroken chan bool
 
-func GetPrices(assets []string, prices map[string]string, wsClosed chan bool, interrupt chan os.Signal) {
-	defer close(wsClosed)
+func GetPrices(
+	assets []string,
+	prices map[string]string,
+	pricesMu *sync.Mutex,
+	getterStopped chan bool,
+	interrupt chan os.Signal,
+) {
+	defer close(getterStopped)
 
 	binanceBroken = make(chan bool)
 	// ftxBroken = make(chan bool)
 	// coinbaseBroken = make(chan bool)
 
-	go binanceConnect(assets, prices, interrupt)
-	// go ftxConnect(assets, prices, interrupt)
-	// go coinbaseConnect(assets, prices, interrupt)
+	go binanceConnect(assets, prices, pricesMu, interrupt)
+	// go ftxConnect(assets, prices, pricesMu, interrupt)
+	// go coinbaseConnect(assets, prices, pricesMu, interrupt)
 
+	fmt.Println("Price getter started")
 	for {
 		select {
 		case <-interrupt:
@@ -45,16 +53,16 @@ func GetPrices(assets []string, prices map[string]string, wsClosed chan bool, in
 			// <- coinbaseBroken
 			return
 		case <-binanceBroken:
-			go binanceConnect(assets, prices, interrupt)
+			go binanceConnect(assets, prices, pricesMu, interrupt)
 			// case <-ftxBroken:
-			// 	go ftxConnect(assets, prices, interrupt)
+			// go ftxConnect(assets, prices, pricesMu, interrupt)
 			// case <-coinbaseBroken:
-			// 	go coinbaseConnect(assets, prices, interrupt)
+			// go coinbaseConnect(assets, prices, pricesMu, interrupt)
 		}
 	}
 }
 
-func binanceConnect(assets []string, prices map[string]string, interrupt chan os.Signal) {
+func binanceConnect(assets []string, prices map[string]string, pricesMu *sync.Mutex, interrupt chan os.Signal) {
 	streams := []string{}
 
 	for _, asset := range assets {
@@ -68,10 +76,10 @@ func binanceConnect(assets []string, prices map[string]string, interrupt chan os
 		log.Fatal("Connection error: ", err)
 	}
 
-	binanceHandler(conn, prices, interrupt)
+	binanceHandler(conn, prices, pricesMu, interrupt)
 }
 
-func binanceHandler(conn *websocket.Conn, prices map[string]string, interrupt chan os.Signal) {
+func binanceHandler(conn *websocket.Conn, prices map[string]string, pricesMu *sync.Mutex, interrupt chan os.Signal) {
 	defer close(binanceBroken)
 	for {
 		select {
@@ -106,7 +114,9 @@ func binanceHandler(conn *websocket.Conn, prices map[string]string, interrupt ch
 				log.Fatal(err)
 			}
 
+			pricesMu.Lock()
 			prices[asset] = fmt.Sprintf("%f", (bidPrice+askPrice)/2)
+			pricesMu.Unlock()
 		}
 	}
 }

@@ -6,11 +6,13 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sync"
+	"time"
 
 	sdktypes "github.com/cosmos/cosmos-sdk/types"
 	"github.com/ignite/cli/ignite/pkg/cosmosclient"
+	"github.com/soupy-finance/noodle-val-client/faucetserver"
 	"github.com/soupy-finance/noodle-val-client/pricesgetter"
-	"github.com/soupy-finance/noodle/x/oracle/types"
 	oracletypes "github.com/soupy-finance/noodle/x/oracle/types"
 )
 
@@ -40,14 +42,37 @@ func main() {
 
 	assets := getAssets(cosmos)
 	prices := map[string]string{}
+	pricesMu := &sync.Mutex{}
+	txMsgs := []sdktypes.Msg{}
+	txMsgsMu := &sync.Mutex{}
 
 	for _, asset := range assets {
 		prices[asset] = "0"
 	}
 
-	wsClosed := make(chan bool)
-	go pricesgetter.GetPrices(assets, prices, wsClosed, interrupt)
-	sendPrices(cosmos, address, accountName, prices, wsClosed, interrupt)
+	getterStopped := make(chan bool)
+	faucetStopped := make(chan bool)
+
+	go pricesgetter.GetPrices(assets, prices, pricesMu, getterStopped, interrupt)
+	go faucetserver.ListenAndServe(cosmos, address, accountName, &txMsgs, txMsgsMu, faucetStopped, interrupt)
+
+	for {
+		select {
+		case <-interrupt:
+			<-getterStopped
+			<-faucetStopped
+			return
+		default:
+			txMsgsMu.Lock()
+			msg := createPricesMsg(cosmos, address, prices, pricesMu)
+			txMsgs = append(txMsgs, msg)
+			_, _ = cosmos.BroadcastTx(accountName, txMsgs...)
+			txMsgs = []sdktypes.Msg{}
+			txMsgsMu.Unlock()
+
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
 }
 
 func getAssets(cosmos cosmosclient.Client) []string {
@@ -64,35 +89,23 @@ func getAssets(cosmos cosmosclient.Client) []string {
 	return assets
 }
 
-func sendPrices(
+func createPricesMsg(
 	cosmos cosmosclient.Client,
 	address sdktypes.AccAddress,
-	accountName string,
 	prices map[string]string,
-	wsClosed chan bool,
-	interrupt chan os.Signal,
-) {
-	for {
-		select {
-		case <-interrupt:
-			<-wsClosed
-			return
-		default:
-			pricesJson, err := json.Marshal(prices)
+	pricesMu *sync.Mutex,
+) *oracletypes.MsgUpdatePrices {
+	pricesMu.Lock()
+	pricesJson, err := json.Marshal(prices)
+	pricesMu.Unlock()
 
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			msg := &types.MsgUpdatePrices{
-				Creator: address.String(),
-				Data:    string(pricesJson),
-			}
-			_, err = cosmos.BroadcastTx(accountName, msg)
-
-			if err != nil {
-				log.Fatal(err)
-			}
-		}
+	if err != nil {
+		log.Fatal(err)
 	}
+
+	msg := &oracletypes.MsgUpdatePrices{
+		Creator: address.String(),
+		Data:    string(pricesJson),
+	}
+	return msg
 }
