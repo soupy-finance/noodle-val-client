@@ -30,6 +30,9 @@ func ListenAndServe(
 	}
 
 	mux.HandleFunc("/deposit", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+
 		fmt.Println("Deposit request")
 		addr := r.URL.Query().Get("address")
 
@@ -54,7 +57,6 @@ func ListenAndServe(
 		*txMsgs = append(*txMsgs, msg1, msg2)
 		txMsgsMu.Unlock()
 
-		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.WriteHeader(http.StatusOK)
 	})
 
