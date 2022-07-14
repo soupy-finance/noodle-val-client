@@ -54,6 +54,7 @@ func ListenAndServe(
 		*txMsgs = append(*txMsgs, msg1, msg2)
 		txMsgsMu.Unlock()
 
+		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.WriteHeader(http.StatusOK)
 	})
 
